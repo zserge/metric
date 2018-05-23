@@ -50,9 +50,6 @@ func main() {
 		}
 	}()
 	http.Handle("/debug/metrics", metric.Handler(metric.Exposed))
-	http.HandleFunc("/fib", func(w http.ResponseWriter, r *http.Request) {
-
-	})
 	http.HandleFunc("/fibrec", func(w http.ResponseWriter, r *http.Request) {
 		expvar.Get("fib:rec:count").(metric.Metric).Add(1)
 		start := time.Now()
