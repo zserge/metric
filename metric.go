@@ -16,6 +16,18 @@ type Metric interface {
 	String() string
 }
 
+func NewCounter(frames ...string) Metric {
+	return newMetric(func() Metric { return &counter{} }, frames...)
+}
+
+func NewGauge(frames ...string) Metric {
+	return newMetric(func() Metric { return &gauge{} }, frames...)
+}
+
+func NewHistogram(frames ...string) Metric {
+	return newMetric(func() Metric { return &histogram{} }, frames...)
+}
+
 type timeseries struct {
 	sync.Mutex
 	now      time.Time
@@ -271,16 +283,4 @@ func newMetric(builder func() Metric, frames ...string) Metric {
 		mm = append(mm, newTimeseries(builder, frame))
 	}
 	return mm
-}
-
-func NewCounter(frames ...string) Metric {
-	return newMetric(func() Metric { return &counter{} }, frames...)
-}
-
-func NewGauge(frames ...string) Metric {
-	return newMetric(func() Metric { return &gauge{} }, frames...)
-}
-
-func NewHistogram(frames ...string) Metric {
-	return newMetric(func() Metric { return &histogram{} }, frames...)
 }
