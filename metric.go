@@ -19,14 +19,19 @@ type Metric interface {
 	String() string
 }
 
+// Returns a counter metric that increments the value with each incoming number.
 func NewCounter(frames ...string) Metric {
 	return newMetric(func() Metric { return &counter{} }, frames...)
 }
 
+// Returns a gauge metric that sums up the incoming values and returns
+// mean/min/max of the resulting distribution.
 func NewGauge(frames ...string) Metric {
 	return newMetric(func() Metric { return &gauge{} }, frames...)
 }
 
+// Returns a histogram metric that calculates 50%, 90% and 99% percentiles of
+// the incoming numbers.
 func NewHistogram(frames ...string) Metric {
 	return newMetric(func() Metric { return &histogram{} }, frames...)
 }
