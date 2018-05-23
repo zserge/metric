@@ -75,7 +75,10 @@ func (ts *timeseries) MarshalJSON() ([]byte, error) {
 	ts.Lock()
 	defer ts.Unlock()
 	ts.roll()
-	return json.Marshal(ts.samples)
+	return json.Marshal(struct {
+		Interval float64  `json:"interval"`
+		Samples  []Metric `json:"samples"`
+	}{float64(ts.interval) / float64(time.Second), ts.samples})
 }
 
 func (ts *timeseries) String() string {
@@ -96,14 +99,14 @@ func (mm multimetric) Reset() {
 	}
 }
 func (mm multimetric) String() string {
-	s := "{"
+	s := `{"metrics":[`
 	for i, m := range mm {
 		if i != 0 {
 			s = s + ","
 		}
 		s = s + m.String()
 	}
-	s = s + "}"
+	s = s + "]}"
 	return s
 }
 
@@ -121,8 +124,9 @@ func (c *counter) Reset()         { c.count = 0 }
 func (c *counter) Add(n float64)  { c.count += n }
 func (c *counter) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
+		Type  string  `json:"type"`
 		Count float64 `json:"count"`
-	}{c.count})
+	}{"c", c.count})
 }
 
 type gauge struct {
@@ -146,15 +150,18 @@ func (g *gauge) Add(n float64) {
 }
 
 func (g *gauge) MarshalJSON() ([]byte, error) {
-	mean := g.sum / float64(g.count)
-	if g.count == 0 {
-		mean = 0
-	}
 	return json.Marshal(struct {
+		Type string  `json:"type"`
 		Mean float64 `json:"mean"`
 		Min  float64 `json:"min"`
 		Max  float64 `json:"max"`
-	}{mean, g.min, g.max})
+	}{"g", g.mean(), g.min, g.max})
+}
+func (g *gauge) mean() float64 {
+	if g.count == 0 {
+		return 0
+	}
+	return g.sum / float64(g.count)
 }
 
 const maxBins = 100
@@ -195,10 +202,11 @@ func (h *histogram) Add(n float64) {
 
 func (h *histogram) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		P50 float64 `json:"p50"`
-		P90 float64 `json:"p90"`
-		P99 float64 `json:"p99"`
-	}{h.quantile(0.5), h.quantile(0.9), h.quantile(0.99)})
+		Type string  `json:"type"`
+		P50  float64 `json:"p50"`
+		P90  float64 `json:"p90"`
+		P99  float64 `json:"p99"`
+	}{"h", h.quantile(0.5), h.quantile(0.9), h.quantile(0.99)})
 }
 
 func (h *histogram) trim() {

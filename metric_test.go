@@ -43,38 +43,38 @@ func assertJSON(t *testing.T, o1, o2 interface{}) {
 
 func TestCounter(t *testing.T) {
 	c := &counter{}
-	assertJSON(t, c, h{"count": 0})
+	assertJSON(t, c, h{"type": "c", "count": 0})
 	c.Add(1)
-	assertJSON(t, c, h{"count": 1})
+	assertJSON(t, c, h{"type": "c", "count": 1})
 	c.Add(10)
-	assertJSON(t, c, h{"count": 11})
+	assertJSON(t, c, h{"type": "c", "count": 11})
 	c.Reset()
-	assertJSON(t, c, h{"count": 0})
+	assertJSON(t, c, h{"type": "c", "count": 0})
 }
 
 func TestGauge(t *testing.T) {
 	g := &gauge{}
-	assertJSON(t, g, h{"mean": 0, "min": 0, "max": 0})
+	assertJSON(t, g, h{"type": "g", "mean": 0, "min": 0, "max": 0})
 	g.Add(1)
-	assertJSON(t, g, h{"mean": 1, "min": 1, "max": 1})
+	assertJSON(t, g, h{"type": "g", "mean": 1, "min": 1, "max": 1})
 	g.Add(5)
-	assertJSON(t, g, h{"mean": 3, "min": 1, "max": 5})
+	assertJSON(t, g, h{"type": "g", "mean": 3, "min": 1, "max": 5})
 	g.Add(0)
-	assertJSON(t, g, h{"mean": 2, "min": 0, "max": 5})
+	assertJSON(t, g, h{"type": "g", "mean": 2, "min": 0, "max": 5})
 	g.Reset()
-	assertJSON(t, g, h{"mean": 0, "min": 0, "max": 0})
+	assertJSON(t, g, h{"type": "g", "mean": 0, "min": 0, "max": 0})
 }
 
 func TestHistogram(t *testing.T) {
 	hist := &histogram{}
-	assertJSON(t, hist, h{"p50": 0, "p90": 0, "p99": 0})
+	assertJSON(t, hist, h{"type": "h", "p50": 0, "p90": 0, "p99": 0})
 	hist.Add(1)
-	assertJSON(t, hist, h{"p50": 1, "p90": 1, "p99": 1})
+	assertJSON(t, hist, h{"type": "h", "p50": 1, "p90": 1, "p99": 1})
 	hist.Reset()
 	for i := 0; i < 100; i++ {
 		hist.Add(float64(i))
 	}
-	assertJSON(t, hist, h{"p50": 49, "p90": 89, "p99": 98})
+	assertJSON(t, hist, h{"type": "h", "p50": 49, "p90": 89, "p99": 98})
 }
 
 func TestHistogramNormalDist(t *testing.T) {
@@ -100,15 +100,16 @@ func TestHistogramNormalDist(t *testing.T) {
 func TestTimeline(t *testing.T) {
 	now = mockTime(0)
 	c := NewCounter("3s1s")
-	assertJSON(t, c, v{h{"count": 0}, h{"count": 0}, h{"count": 0}})
+	count := func(x float64) h { return h{"type": "c", "count": x} }
+	assertJSON(t, c, h{"interval": 1, "samples": v{count(0), count(0), count(0)}})
 	c.Add(1)
-	assertJSON(t, c, v{h{"count": 1}, h{"count": 0}, h{"count": 0}})
+	assertJSON(t, c, h{"interval": 1, "samples": v{count(1), count(0), count(0)}})
 	now = mockTime(1)
-	assertJSON(t, c, v{h{"count": 0}, h{"count": 1}, h{"count": 0}})
+	assertJSON(t, c, h{"interval": 1, "samples": v{count(0), count(1), count(0)}})
 	c.Add(5)
-	assertJSON(t, c, v{h{"count": 5}, h{"count": 1}, h{"count": 0}})
+	assertJSON(t, c, h{"interval": 1, "samples": v{count(5), count(1), count(0)}})
 	now = mockTime(3)
-	assertJSON(t, c, v{h{"count": 0}, h{"count": 0}, h{"count": 5}})
+	assertJSON(t, c, h{"interval": 1, "samples": v{count(0), count(0), count(5)}})
 }
 
 func TestExpVar(t *testing.T) {
@@ -117,17 +118,17 @@ func TestExpVar(t *testing.T) {
 	expvar.Publish("test:timeline", NewCounter("3s1s"))
 	expvar.Get("test:count").(Metric).Add(1)
 	expvar.Get("test:timeline").(Metric).Add(1)
-	if expvar.Get("test:count").String() != `{"count":1}` {
+	if expvar.Get("test:count").String() != `{"type":"c","count":1}` {
 		t.Fatal(expvar.Get("test:count"))
 	}
-	if expvar.Get("test:timeline").String() != `[{"count":1},{"count":0},{"count":0}]` {
+	if expvar.Get("test:timeline").String() != `{"interval":1,"samples":[{"type":"c","count":1},{"type":"c","count":0},{"type":"c","count":0}]}` {
 		t.Fatal(expvar.Get("test:timeline"))
 	}
 	now = mockTime(1)
-	if expvar.Get("test:count").String() != `{"count":1}` {
+	if expvar.Get("test:count").String() != `{"type":"c","count":1}` {
 		t.Fatal(expvar.Get("test:count"))
 	}
-	if expvar.Get("test:timeline").String() != `[{"count":0},{"count":1},{"count":0}]` {
+	if expvar.Get("test:timeline").String() != `{"interval":1,"samples":[{"type":"c","count":0},{"type":"c","count":1},{"type":"c","count":0}]}` {
 		t.Fatal(expvar.Get("test:timeline"))
 	}
 }
