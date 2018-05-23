@@ -3,7 +3,9 @@ package metric
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -116,17 +118,26 @@ func strjson(x interface{}) string {
 }
 
 type counter struct {
-	count float64
+	count uint64
 }
 
 func (c *counter) String() string { return strjson(c) }
-func (c *counter) Reset()         { c.count = 0 }
-func (c *counter) Add(n float64)  { c.count += n }
+func (c *counter) Reset()         { atomic.StoreUint64(&c.count, math.Float64bits(0)) }
+func (c *counter) value() float64 { return math.Float64frombits(atomic.LoadUint64(&c.count)) }
+func (c *counter) Add(n float64) {
+	for {
+		old := math.Float64frombits(atomic.LoadUint64(&c.count))
+		new := old + n
+		if atomic.CompareAndSwapUint64(&c.count, math.Float64bits(old), math.Float64bits(new)) {
+			return
+		}
+	}
+}
 func (c *counter) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Type  string  `json:"type"`
 		Count float64 `json:"count"`
-	}{"c", c.count})
+	}{"c", c.value()})
 }
 
 type gauge struct {
