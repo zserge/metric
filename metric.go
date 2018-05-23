@@ -130,6 +130,7 @@ func (c *counter) MarshalJSON() ([]byte, error) {
 }
 
 type gauge struct {
+	sync.Mutex
 	sum   float64
 	min   float64
 	max   float64
@@ -137,8 +138,14 @@ type gauge struct {
 }
 
 func (g *gauge) String() string { return strjson(g) }
-func (g *gauge) Reset()         { g.count, g.sum, g.min, g.max = 0, 0, 0, 0 }
+func (g *gauge) Reset() {
+	g.Lock()
+	defer g.Unlock()
+	g.count, g.sum, g.min, g.max = 0, 0, 0, 0
+}
 func (g *gauge) Add(n float64) {
+	g.Lock()
+	defer g.Unlock()
 	if n < g.min || g.count == 0 {
 		g.min = n
 	}
@@ -150,6 +157,8 @@ func (g *gauge) Add(n float64) {
 }
 
 func (g *gauge) MarshalJSON() ([]byte, error) {
+	g.Lock()
+	defer g.Unlock()
 	return json.Marshal(struct {
 		Type string  `json:"type"`
 		Mean float64 `json:"mean"`
@@ -172,14 +181,22 @@ type bin struct {
 }
 
 type histogram struct {
+	sync.Mutex
 	bins  []bin
 	total uint64
 }
 
 func (h *histogram) String() string { return strjson(h) }
-func (h *histogram) Reset()         { h.bins = nil; h.total = 0 }
+func (h *histogram) Reset() {
+	h.Lock()
+	defer h.Unlock()
+	h.bins = nil
+	h.total = 0
+}
 
 func (h *histogram) Add(n float64) {
+	h.Lock()
+	defer h.Unlock()
 	defer h.trim()
 	h.total++
 	for i := range h.bins {
@@ -201,6 +218,8 @@ func (h *histogram) Add(n float64) {
 }
 
 func (h *histogram) MarshalJSON() ([]byte, error) {
+	h.Lock()
+	defer h.Unlock()
 	return json.Marshal(struct {
 		Type string  `json:"type"`
 		P50  float64 `json:"p50"`
