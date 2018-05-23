@@ -160,11 +160,11 @@ func duration(samples []interface{}, n float64) string {
 		return fmt.Sprintf("%d min", int(n/60))
 	} else if n < 24*60*60 {
 		return fmt.Sprintf("%d hrs", int(n/60/60))
-	} else {
-		return fmt.Sprintf("%d days", int(n/24/60/60))
 	}
+	return fmt.Sprintf("%d days", int(n/24/60/60))
 }
 
+// Handler returns an http.Handler that renders web UI for all provided metrics.
 func Handler(snapshot func() map[string]Metric) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		type h map[string]interface{}
@@ -184,6 +184,7 @@ func Handler(snapshot func() map[string]Metric) http.Handler {
 	})
 }
 
+// Exposed returns a map of exposed metrics (see expvar package).
 func Exposed() map[string]Metric {
 	m := map[string]Metric{}
 	expvar.Do(func(kv expvar.KeyValue) {

@@ -12,6 +12,7 @@ import (
 // To mock time in tests
 var now = time.Now
 
+// Metric is a single meter (counter, gauge or histogram, optionally - with history)
 type Metric interface {
 	Add(n float64)
 	Reset()
