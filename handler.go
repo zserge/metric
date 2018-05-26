@@ -17,7 +17,7 @@ var (
 		Parse(`<!DOCTYPE html>
 <html lang="us">
 <meta charset="utf-8">
-<title>SparkSVG Test</title>
+<title>Metrics report</title>
 <meta name="viewport" content="width=device-width">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; font-family: monospace; font-size: 12px; }
