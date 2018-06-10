@@ -217,22 +217,15 @@ func (h *histogram) Add(n float64) {
 	defer h.Unlock()
 	defer h.trim()
 	h.total++
+	newbin := bin{value: n, count: 1}
 	for i := range h.bins {
-		if h.bins[i].value == n {
-			h.bins[i].count++
-			return
-		}
 		if h.bins[i].value > n {
-			newbin := bin{value: n, count: 1}
-			head := append(make([]bin, 0), h.bins[0:i]...)
-			head = append(head, newbin)
-			tail := h.bins[i:]
-			h.bins = append(head, tail...)
+			h.bins = append(h.bins[:i], append([]bin{newbin}, h.bins[i:]...)...)
 			return
 		}
 	}
 
-	h.bins = append(h.bins, bin{count: 1, value: n})
+	h.bins = append(h.bins, newbin)
 }
 
 func (h *histogram) MarshalJSON() ([]byte, error) {
@@ -248,29 +241,21 @@ func (h *histogram) MarshalJSON() ([]byte, error) {
 
 func (h *histogram) trim() {
 	for len(h.bins) > maxBins {
-		minDelta := 1e99
-		minDeltaIndex := 0
-		for i := range h.bins {
-			if i == 0 {
-				continue
-			}
-			if delta := h.bins[i].value - h.bins[i-1].value; delta < minDelta {
-				minDelta = delta
-				minDeltaIndex = i
+		d := float64(0)
+		i := 0
+		for j := 1; j < len(h.bins); j++ {
+			if dv := h.bins[j].value - h.bins[j-1].value; dv < d || j == 1 {
+				d = dv
+				i = j
 			}
 		}
-		totalCount := h.bins[minDeltaIndex-1].count + h.bins[minDeltaIndex].count
-		mergedbin := bin{
-			value: (h.bins[minDeltaIndex-1].value*
-				h.bins[minDeltaIndex-1].count +
-				h.bins[minDeltaIndex].value*
-					h.bins[minDeltaIndex].count) /
-				totalCount, // weighted average
-			count: totalCount, // summed heights
+		count := h.bins[i-1].count + h.bins[i].count
+		merged := bin{
+			value: (h.bins[i-1].value*h.bins[i-1].count + h.bins[i].value*h.bins[i].count) / count,
+			count: count,
 		}
-		head := append(make([]bin, 0), h.bins[0:minDeltaIndex-1]...)
-		tail := append([]bin{mergedbin}, h.bins[minDeltaIndex+1:]...)
-		h.bins = append(head, tail...)
+		h.bins = append(h.bins[:i-1], h.bins[i:]...)
+		h.bins[i-1] = merged
 	}
 }
 
