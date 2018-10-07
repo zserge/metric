@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,26 +17,35 @@ var now = time.Now
 // Metric is a single meter (counter, gauge or histogram, optionally - with history)
 type Metric interface {
 	Add(n float64)
-	Reset()
 	String() string
 }
+
+// metric is an extended private interface with some additional internal
+// methods used by timeseries. Counters, gauges and histograms implement it.
+type metric interface {
+	Metric
+	Reset()
+	Aggregate(roll int, samples []metric)
+}
+
+var _, _, _ metric = &counter{}, &gauge{}, &histogram{}
 
 // NewCounter returns a counter metric that increments the value with each
 // incoming number.
 func NewCounter(frames ...string) Metric {
-	return newMetric(func() Metric { return &counter{} }, frames...)
+	return newMetric(func() metric { return &counter{} }, frames...)
 }
 
 // NewGauge returns a gauge metric that sums up the incoming values and returns
 // mean/min/max of the resulting distribution.
 func NewGauge(frames ...string) Metric {
-	return newMetric(func() Metric { return &gauge{} }, frames...)
+	return newMetric(func() metric { return &gauge{} }, frames...)
 }
 
 // NewHistogram returns a histogram metric that calculates 50%, 90% and 99%
 // percentiles of the incoming numbers.
 func NewHistogram(frames ...string) Metric {
-	return newMetric(func() Metric { return &histogram{} }, frames...)
+	return newMetric(func() metric { return &histogram{} }, frames...)
 }
 
 type timeseries struct {
@@ -42,10 +53,12 @@ type timeseries struct {
 	now      time.Time
 	size     int
 	interval time.Duration
-	samples  []Metric
+	total    metric
+	samples  []metric
 }
 
 func (ts *timeseries) Reset() {
+	ts.total.Reset()
 	for _, s := range ts.samples {
 		s.Reset()
 	}
@@ -70,6 +83,7 @@ func (ts *timeseries) roll() {
 			ts.samples[0] = tmp
 			ts.samples[0].Reset()
 		}
+		ts.total.Aggregate(roll, ts.samples)
 	}
 }
 
@@ -77,6 +91,7 @@ func (ts *timeseries) Add(n float64) {
 	ts.Lock()
 	defer ts.Unlock()
 	ts.roll()
+	ts.total.Add(n)
 	ts.samples[0].Add(n)
 }
 
@@ -86,49 +101,48 @@ func (ts *timeseries) MarshalJSON() ([]byte, error) {
 	ts.roll()
 	return json.Marshal(struct {
 		Interval float64  `json:"interval"`
-		Samples  []Metric `json:"samples"`
-	}{float64(ts.interval) / float64(time.Second), ts.samples})
+		Total    Metric   `json:"total"`
+		Samples  []metric `json:"samples"`
+	}{float64(ts.interval) / float64(time.Second), ts.total, ts.samples})
 }
 
 func (ts *timeseries) String() string {
-	b, _ := ts.MarshalJSON()
-	return string(b)
+	ts.Lock()
+	defer ts.Unlock()
+	ts.roll()
+	return ts.total.String()
 }
 
-type multimetric []Metric
+type multimetric []*timeseries
 
 func (mm multimetric) Add(n float64) {
 	for _, m := range mm {
 		m.Add(n)
 	}
 }
-func (mm multimetric) Reset() {
-	for _, m := range mm {
-		m.Reset()
-	}
-}
-func (mm multimetric) String() string {
-	s := `{"metrics":[`
+
+func (mm multimetric) MarshalJSON() ([]byte, error) {
+	b := []byte(`{"metrics":[`)
 	for i, m := range mm {
 		if i != 0 {
-			s = s + ","
+			b = append(b, ',')
 		}
-		s = s + m.String()
+		x, _ := json.Marshal(m)
+		b = append(b, x...)
 	}
-	s = s + "]}"
-	return s
+	b = append(b, ']', '}')
+	return b, nil
 }
 
-func strjson(x interface{}) string {
-	b, _ := json.Marshal(x)
-	return string(b)
+func (mm multimetric) String() string {
+	return mm[len(mm)-1].String()
 }
 
 type counter struct {
 	count uint64
 }
 
-func (c *counter) String() string { return strjson(c) }
+func (c *counter) String() string { return strconv.FormatFloat(c.value(), 'g', -1, 64) }
 func (c *counter) Reset()         { atomic.StoreUint64(&c.count, math.Float64bits(0)) }
 func (c *counter) value() float64 { return math.Float64frombits(atomic.LoadUint64(&c.count)) }
 func (c *counter) Add(n float64) {
@@ -147,19 +161,27 @@ func (c *counter) MarshalJSON() ([]byte, error) {
 	}{"c", c.value()})
 }
 
+func (c *counter) Aggregate(roll int, samples []metric) {
+	c.Reset()
+	for _, s := range samples {
+		c.Add(s.(*counter).value())
+	}
+}
+
 type gauge struct {
 	sync.Mutex
+	value float64
 	sum   float64
 	min   float64
 	max   float64
 	count int
 }
 
-func (g *gauge) String() string { return strjson(g) }
+func (g *gauge) String() string { return strconv.FormatFloat(g.value, 'g', -1, 64) }
 func (g *gauge) Reset() {
 	g.Lock()
 	defer g.Unlock()
-	g.count, g.sum, g.min, g.max = 0, 0, 0, 0
+	g.value, g.count, g.sum, g.min, g.max = 0, 0, 0, 0, 0
 }
 func (g *gauge) Add(n float64) {
 	g.Lock()
@@ -170,25 +192,49 @@ func (g *gauge) Add(n float64) {
 	if n > g.max || g.count == 0 {
 		g.max = n
 	}
+	g.value = n
 	g.sum += n
 	g.count++
 }
-
 func (g *gauge) MarshalJSON() ([]byte, error) {
 	g.Lock()
 	defer g.Unlock()
 	return json.Marshal(struct {
-		Type string  `json:"type"`
-		Mean float64 `json:"mean"`
-		Min  float64 `json:"min"`
-		Max  float64 `json:"max"`
-	}{"g", g.mean(), g.min, g.max})
+		Type  string  `json:"type"`
+		Value float64 `json:"value"`
+		Mean  float64 `json:"mean"`
+		Min   float64 `json:"min"`
+		Max   float64 `json:"max"`
+	}{"g", g.value, g.mean(), g.min, g.max})
 }
 func (g *gauge) mean() float64 {
 	if g.count == 0 {
 		return 0
 	}
 	return g.sum / float64(g.count)
+}
+func (g *gauge) Aggregate(roll int, samples []metric) {
+	g.Reset()
+	g.Lock()
+	defer g.Unlock()
+	for i := len(samples) - 1; i >= 0; i-- {
+		s := samples[i].(*gauge)
+		s.Lock()
+		if s.count == 0 {
+			s.Unlock()
+			continue
+		}
+		if g.min > s.min || g.count == 0 {
+			g.min = s.min
+		}
+		if g.max < s.max || g.count == 0 {
+			g.max = s.max
+		}
+		g.count += s.count
+		g.sum += s.sum
+		g.value = s.value
+		s.Unlock()
+	}
 }
 
 const maxBins = 100
@@ -201,10 +247,13 @@ type bin struct {
 type histogram struct {
 	sync.Mutex
 	bins  []bin
-	total uint64
+	total float64
 }
 
-func (h *histogram) String() string { return strjson(h) }
+func (h *histogram) String() string {
+	return fmt.Sprintf(`{"p50":%g,"p90":%g,"p99":%g}`, h.quantile(0.5), h.quantile(0.9), h.quantile(0.99))
+}
+
 func (h *histogram) Reset() {
 	h.Lock()
 	defer h.Unlock()
@@ -216,7 +265,7 @@ func (h *histogram) Add(n float64) {
 	h.Lock()
 	defer h.Unlock()
 	defer h.trim()
-	h.total++
+	h.total = h.total + 1
 	newbin := bin{value: n, count: 1}
 	for i := range h.bins {
 		if h.bins[i].value > n {
@@ -259,18 +308,33 @@ func (h *histogram) trim() {
 	}
 }
 
-func (h *histogram) quantile(q float64) float64 {
-	count := q * float64(h.total)
+func (h *histogram) bin(q float64) bin {
+	count := q * h.total
 	for i := range h.bins {
 		count -= float64(h.bins[i].count)
 		if count <= 0 {
-			return h.bins[i].value
+			return h.bins[i]
 		}
 	}
-	return 0
+	return bin{}
 }
 
-func newTimeseries(builder func() Metric, frame string) *timeseries {
+func (h *histogram) quantile(q float64) float64 {
+	return h.bin(q).value
+}
+
+func (h *histogram) Aggregate(roll int, samples []metric) {
+	h.Lock()
+	defer h.Unlock()
+	alpha := 2 / float64(len(samples)+1)
+	h.total = 0
+	for i := range h.bins {
+		h.bins[i].count = h.bins[i].count * math.Pow(1-alpha, float64(roll))
+		h.total = h.total + h.bins[i].count
+	}
+}
+
+func newTimeseries(builder func() metric, frame string) *timeseries {
 	var (
 		totalNum, intervalNum   int
 		totalUnit, intervalUnit rune
@@ -294,14 +358,15 @@ func newTimeseries(builder func() Metric, frame string) *timeseries {
 		totalDuration = interval * 15
 	}
 	n := int(totalDuration / interval)
-	samples := make([]Metric, n, n)
+	samples := make([]metric, n, n)
 	for i := 0; i < n; i++ {
 		samples[i] = builder()
 	}
-	return &timeseries{interval: interval, samples: samples}
+	totalMetric := builder()
+	return &timeseries{interval: interval, total: totalMetric, samples: samples}
 }
 
-func newMetric(builder func() Metric, frames ...string) Metric {
+func newMetric(builder func() metric, frames ...string) Metric {
 	if len(frames) == 0 {
 		return builder()
 	}
@@ -312,5 +377,9 @@ func newMetric(builder func() Metric, frames ...string) Metric {
 	for _, frame := range frames {
 		mm = append(mm, newTimeseries(builder, frame))
 	}
+	sort.Slice(mm, func(i, j int) bool {
+		a, b := mm[i], mm[j]
+		return a.interval.Seconds()*float64(len(a.samples)) < b.interval.Seconds()*float64(len(b.samples))
+	})
 	return mm
 }

@@ -66,7 +66,7 @@ path:last-child { stroke: black; }
 	<div class="row metric">
 	  <h2 class="col-1">{{ .name }}</h2>
 		<div class="col-2">
-		{{ if or .type }}
+		{{ if .type }}
 			<div class="row">
 				{{ template "table" . }}
 				<div class="col-1"></div>
@@ -100,7 +100,7 @@ path:last-child { stroke: black; }
 </table>
 {{ end }}
 {{ define "timeseries" }}
-  {{ template "table" (index .samples 0) }}
+  {{ template "table" .total }}
 	<div class="col-1">
 		<div class="row">
 			<div class="timeline">{{ duration .samples .interval }}</div>
@@ -171,7 +171,8 @@ func Handler(snapshot func() map[string]Metric) http.Handler {
 		metrics := []h{}
 		for name, metric := range snapshot() {
 			m := h{}
-			json.Unmarshal([]byte(metric.String()), &m)
+			b, _ := json.Marshal(metric)
+			json.Unmarshal(b, &m)
 			m["name"] = name
 			metrics = append(metrics, m)
 		}
