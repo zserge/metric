@@ -28,10 +28,10 @@ func main() {
 	expvar.Publish("random:hist", metric.NewHistogram("2m1s", "15m30s", "1h1m"))
 
 	// Some Go internal metrics
-	expvar.Publish("go:numgoroutine", metric.NewGauge("2ms1s", "15m30s", "1h1m"))
-	expvar.Publish("go:numcgocall", metric.NewGauge("2ms1s", "15m30s", "1h1m"))
-	expvar.Publish("go:alloc", metric.NewGauge("2ms1s", "15m30s", "1h1m"))
-	expvar.Publish("go:alloctotal", metric.NewGauge("2ms1s", "15m30s", "1h1m"))
+	expvar.Publish("go:numgoroutine", metric.NewGauge("2m1s", "15m30s", "1h1m"))
+	expvar.Publish("go:numcgocall", metric.NewGauge("2m1s", "15m30s", "1h1m"))
+	expvar.Publish("go:alloc", metric.NewGauge("2m1s", "15m30s", "1h1m"))
+	expvar.Publish("go:alloctotal", metric.NewGauge("2m1s", "15m30s", "1h1m"))
 
 	go func() {
 		for range time.Tick(123 * time.Millisecond) {
@@ -56,5 +56,6 @@ func main() {
 		fmt.Fprintf(w, "%d", fibrec(40))
 		expvar.Get("fib:rec:sec").(metric.Metric).Add(float64(time.Now().Sub(start)) / float64(time.Second))
 	})
+	fmt.Println("Listen on :8000")
 	http.ListenAndServe(":8000", nil)
 }
