@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -172,6 +173,7 @@ func Handler(snapshot func() map[string]Metric) http.Handler {
 		for name, metric := range snapshot() {
 			m := h{}
 			b, _ := json.Marshal(metric)
+			log.Println("Got for", name, string(b))
 			json.Unmarshal(b, &m)
 			m["name"] = name
 			metrics = append(metrics, m)
