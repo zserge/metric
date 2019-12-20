@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -19,6 +20,7 @@ var (
 <meta charset="utf-8">
 <title>Metrics report</title>
 <meta name="viewport" content="width=device-width">
+<meta http-equiv="refresh" content="1">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; font-family: monospace; font-size: 12px; }
 .container {
@@ -171,8 +173,16 @@ func Handler(snapshot func() map[string]Metric) http.Handler {
 		metrics := []h{}
 		for name, metric := range snapshot() {
 			m := h{}
-			b, _ := json.Marshal(metric)
-			json.Unmarshal(b, &m)
+			b, err := json.Marshal(metric)
+			if err != nil {
+				log.Println(err)
+			}
+
+			if err := json.Unmarshal(b, &m); err != nil {
+				log.Println("error at", name+":", err)
+				log.Println(string(b))
+			}
+
 			m["name"] = name
 			metrics = append(metrics, m)
 		}

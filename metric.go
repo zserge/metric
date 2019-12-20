@@ -1,7 +1,9 @@
 package metric
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -46,6 +48,50 @@ func NewGauge(frames ...string) Metric {
 // percentiles of the incoming numbers.
 func NewHistogram(frames ...string) Metric {
 	return newMetric(func() metric { return &histogram{} }, frames...)
+}
+
+func LoadMetricJSON(b []byte) (Metric, error) {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, b); err != nil {
+		return nil, err
+	}
+
+	b = buf.Bytes()
+
+	switch {
+	case bytes.HasPrefix(b, []byte(`{"metrics":[{"interval":`)):
+		var mm multimetric
+		return mm, json.Unmarshal(b, &mm)
+	case bytes.HasPrefix(b, []byte(`{"interval":`)):
+		var ts timeseries
+		return &ts, json.Unmarshal(b, &ts)
+	default:
+		return loadSingleMetricsJSON(b)
+	}
+}
+
+func loadSingleMetricsJSON(b []byte) (metric, error) {
+	var Part struct {
+		Type string `json:"type"`
+	}
+
+	if err := json.Unmarshal(b, &Part); err != nil {
+		return nil, err
+	}
+
+	switch Part.Type {
+	case "c":
+		var c counter
+		return &c, json.Unmarshal(b, &c)
+	case "g":
+		var g gauge
+		return &g, json.Unmarshal(b, &g)
+	case "h":
+		var h histogram
+		return &h, json.Unmarshal(b, &h)
+	}
+
+	return nil, errors.New("Invalid JSON")
 }
 
 type timeseries struct {
@@ -101,9 +147,45 @@ func (ts *timeseries) MarshalJSON() ([]byte, error) {
 	ts.roll()
 	return json.Marshal(struct {
 		Interval float64  `json:"interval"`
-		Total    Metric   `json:"total"`
+		Total    metric   `json:"total"`
 		Samples  []metric `json:"samples"`
 	}{float64(ts.interval) / float64(time.Second), ts.total, ts.samples})
+}
+
+func (ts *timeseries) UnmarshalJSON(v []byte) error {
+	ts.Lock()
+	defer ts.Unlock()
+
+	var data struct {
+		Interval float64           `json:"interval"`
+		Total    json.RawMessage   `json:"total"`
+		Samples  []json.RawMessage `json:"samples"`
+	}
+
+	if err := json.Unmarshal(v, &data); err != nil {
+		return err
+	}
+
+	ts.interval = time.Duration(data.Interval * float64(time.Second))
+
+	m, err := loadSingleMetricsJSON(data.Total)
+	if err != nil {
+		return err
+	}
+	ts.total = m
+
+	ts.samples = make([]metric, len(data.Samples))
+
+	for i, sample := range data.Samples {
+		m, err := loadSingleMetricsJSON(sample)
+		if err != nil {
+			return err
+		}
+		ts.samples[i] = m
+	}
+
+	ts.roll()
+	return nil
 }
 
 func (ts *timeseries) String() string {
@@ -127,11 +209,29 @@ func (mm multimetric) MarshalJSON() ([]byte, error) {
 		if i != 0 {
 			b = append(b, ',')
 		}
-		x, _ := json.Marshal(m)
+
+		x, err := m.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+
 		b = append(b, x...)
 	}
 	b = append(b, ']', '}')
 	return b, nil
+}
+
+func (mm *multimetric) UnmarshalJSON(v []byte) error {
+	var metrics struct {
+		M []*timeseries `json:"metrics"`
+	}
+
+	if err := json.Unmarshal(v, &metrics); err != nil {
+		return err
+	}
+
+	*mm = metrics.M
+	return nil
 }
 
 func (mm multimetric) String() string {
@@ -142,9 +242,18 @@ type counter struct {
 	count uint64
 }
 
-func (c *counter) String() string { return strconv.FormatFloat(c.value(), 'g', -1, 64) }
-func (c *counter) Reset()         { atomic.StoreUint64(&c.count, math.Float64bits(0)) }
-func (c *counter) value() float64 { return math.Float64frombits(atomic.LoadUint64(&c.count)) }
+func (c *counter) String() string {
+	return strconv.FormatFloat(c.value(), 'g', -1, 64)
+}
+func (c *counter) Reset() {
+	atomic.StoreUint64(&c.count, math.Float64bits(0))
+}
+func (c *counter) value() float64 {
+	return math.Float64frombits(atomic.LoadUint64(&c.count))
+}
+func (c *counter) unvalue(f float64) {
+	atomic.StoreUint64(&c.count, math.Float64bits(f))
+}
 func (c *counter) Add(n float64) {
 	for {
 		old := math.Float64frombits(atomic.LoadUint64(&c.count))
@@ -160,6 +269,18 @@ func (c *counter) MarshalJSON() ([]byte, error) {
 		Count float64 `json:"count"`
 	}{"c", c.value()})
 }
+func (c *counter) UnmarshalJSON(v []byte) error {
+	var data struct {
+		Count float64 `json:"count"`
+	}
+
+	if err := json.Unmarshal(v, &data); err != nil {
+		return err
+	}
+
+	c.unvalue(data.Count)
+	return nil
+}
 
 func (c *counter) Aggregate(roll int, samples []metric) {
 	c.Reset()
@@ -169,49 +290,64 @@ func (c *counter) Aggregate(roll int, samples []metric) {
 }
 
 type gauge struct {
-	sync.Mutex
-	value float64
-	sum   float64
-	min   float64
-	max   float64
-	count int
+	sync.Mutex `json:"-"`
+
+	Value float64 `json:"value"`
+	Sum   float64 `json:"sum"`
+	Min   float64 `json:"min"`
+	Max   float64 `json:"max"`
+	Count int     `json:"count"`
 }
 
-func (g *gauge) String() string { return strconv.FormatFloat(g.value, 'g', -1, 64) }
+func (g *gauge) String() string {
+	return strconv.FormatFloat(g.Value, 'g', -1, 64)
+}
 func (g *gauge) Reset() {
 	g.Lock()
 	defer g.Unlock()
-	g.value, g.count, g.sum, g.min, g.max = 0, 0, 0, 0, 0
+	g.Value, g.Count, g.Sum, g.Min, g.Max = 0, 0, 0, 0, 0
 }
 func (g *gauge) Add(n float64) {
 	g.Lock()
 	defer g.Unlock()
-	if n < g.min || g.count == 0 {
-		g.min = n
+	if n < g.Min || g.Count == 0 {
+		g.Min = n
 	}
-	if n > g.max || g.count == 0 {
-		g.max = n
+	if n > g.Max || g.Count == 0 {
+		g.Max = n
 	}
-	g.value = n
-	g.sum += n
-	g.count++
+	g.Value = n
+	g.Sum += n
+	g.Count++
 }
 func (g *gauge) MarshalJSON() ([]byte, error) {
 	g.Lock()
 	defer g.Unlock()
-	return json.Marshal(struct {
+
+	var data struct {
 		Type  string  `json:"type"`
 		Value float64 `json:"value"`
 		Mean  float64 `json:"mean"`
 		Min   float64 `json:"min"`
 		Max   float64 `json:"max"`
-	}{"g", g.value, g.mean(), g.min, g.max})
+		Sum   float64 `json:"sum"`
+		Count int     `json:"count"`
+	}
+	data.Type = "g"
+	data.Value = g.Value
+	data.Sum = g.Sum
+	data.Min = g.Min
+	data.Max = g.Max
+	data.Count = g.Count
+	data.Mean = g.mean()
+
+	return json.Marshal(&data)
 }
 func (g *gauge) mean() float64 {
-	if g.count == 0 {
+	if g.Count == 0 {
 		return 0
 	}
-	return g.sum / float64(g.count)
+	return g.Sum / float64(g.Count)
 }
 func (g *gauge) Aggregate(roll int, samples []metric) {
 	g.Reset()
@@ -220,19 +356,19 @@ func (g *gauge) Aggregate(roll int, samples []metric) {
 	for i := len(samples) - 1; i >= 0; i-- {
 		s := samples[i].(*gauge)
 		s.Lock()
-		if s.count == 0 {
+		if s.Count == 0 {
 			s.Unlock()
 			continue
 		}
-		if g.min > s.min || g.count == 0 {
-			g.min = s.min
+		if g.Min > s.Min || g.Count == 0 {
+			g.Min = s.Min
 		}
-		if g.max < s.max || g.count == 0 {
-			g.max = s.max
+		if g.Max < s.Max || g.Count == 0 {
+			g.Max = s.Max
 		}
-		g.count += s.count
-		g.sum += s.sum
-		g.value = s.value
+		g.Count += s.Count
+		g.Sum += s.Sum
+		g.Value = s.Value
 		s.Unlock()
 	}
 }
@@ -240,8 +376,8 @@ func (g *gauge) Aggregate(roll int, samples []metric) {
 const maxBins = 100
 
 type bin struct {
-	value float64
-	count float64
+	Value float64 `json:"value"`
+	Count float64 `json:"count"`
 }
 
 type histogram struct {
@@ -266,9 +402,9 @@ func (h *histogram) Add(n float64) {
 	defer h.Unlock()
 	defer h.trim()
 	h.total = h.total + 1
-	newbin := bin{value: n, count: 1}
+	newbin := bin{Value: n, Count: 1}
 	for i := range h.bins {
-		if h.bins[i].value > n {
+		if h.bins[i].Value > n {
 			h.bins = append(h.bins[:i], append([]bin{newbin}, h.bins[i:]...)...)
 			return
 		}
@@ -281,11 +417,32 @@ func (h *histogram) MarshalJSON() ([]byte, error) {
 	h.Lock()
 	defer h.Unlock()
 	return json.Marshal(struct {
-		Type string  `json:"type"`
-		P50  float64 `json:"p50"`
-		P90  float64 `json:"p90"`
-		P99  float64 `json:"p99"`
-	}{"h", h.quantile(0.5), h.quantile(0.9), h.quantile(0.99)})
+		Type  string  `json:"type"`
+		P50   float64 `json:"p50"`
+		P90   float64 `json:"p90"`
+		P99   float64 `json:"p99"`
+		Bins  []bin   `json:"bins"`
+		Total float64 `json:"total"`
+	}{"h", h.quantile(0.5), h.quantile(0.9), h.quantile(0.99),
+		h.bins, h.total})
+}
+
+func (h *histogram) UnmarshalJSON(v []byte) error {
+	h.Lock()
+	defer h.Unlock()
+
+	var data struct {
+		B []bin   `json:"bins"`
+		T float64 `json:"total"`
+	}
+
+	if err := json.Unmarshal(v, &data); err != nil {
+		return err
+	}
+
+	h.bins = data.B
+	h.total = data.T
+	return nil
 }
 
 func (h *histogram) trim() {
@@ -293,15 +450,15 @@ func (h *histogram) trim() {
 		d := float64(0)
 		i := 0
 		for j := 1; j < len(h.bins); j++ {
-			if dv := h.bins[j].value - h.bins[j-1].value; dv < d || j == 1 {
+			if dv := h.bins[j].Value - h.bins[j-1].Value; dv < d || j == 1 {
 				d = dv
 				i = j
 			}
 		}
-		count := h.bins[i-1].count + h.bins[i].count
+		Count := h.bins[i-1].Count + h.bins[i].Count
 		merged := bin{
-			value: (h.bins[i-1].value*h.bins[i-1].count + h.bins[i].value*h.bins[i].count) / count,
-			count: count,
+			Value: (h.bins[i-1].Value*h.bins[i-1].Count + h.bins[i].Value*h.bins[i].Count) / Count,
+			Count: Count,
 		}
 		h.bins = append(h.bins[:i-1], h.bins[i:]...)
 		h.bins[i-1] = merged
@@ -309,10 +466,10 @@ func (h *histogram) trim() {
 }
 
 func (h *histogram) bin(q float64) bin {
-	count := q * h.total
+	Count := q * h.total
 	for i := range h.bins {
-		count -= float64(h.bins[i].count)
-		if count <= 0 {
+		Count -= float64(h.bins[i].Count)
+		if Count <= 0 {
 			return h.bins[i]
 		}
 	}
@@ -320,7 +477,7 @@ func (h *histogram) bin(q float64) bin {
 }
 
 func (h *histogram) quantile(q float64) float64 {
-	return h.bin(q).value
+	return h.bin(q).Value
 }
 
 func (h *histogram) Aggregate(roll int, samples []metric) {
@@ -329,8 +486,8 @@ func (h *histogram) Aggregate(roll int, samples []metric) {
 	alpha := 2 / float64(len(samples)+1)
 	h.total = 0
 	for i := range h.bins {
-		h.bins[i].count = h.bins[i].count * math.Pow(1-alpha, float64(roll))
-		h.total = h.total + h.bins[i].count
+		h.bins[i].Count = h.bins[i].Count * math.Pow(1-alpha, float64(roll))
+		h.total = h.total + h.bins[i].Count
 	}
 }
 
@@ -373,10 +530,12 @@ func newMetric(builder func() metric, frames ...string) Metric {
 	if len(frames) == 1 {
 		return newTimeseries(builder, frames[0])
 	}
-	mm := multimetric{}
+
+	var mm multimetric
 	for _, frame := range frames {
 		mm = append(mm, newTimeseries(builder, frame))
 	}
+
 	sort.Slice(mm, func(i, j int) bool {
 		a, b := mm[i], mm[j]
 		return a.interval.Seconds()*float64(len(a.samples)) < b.interval.Seconds()*float64(len(b.samples))
