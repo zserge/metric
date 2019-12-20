@@ -54,7 +54,8 @@ func main() {
 		expvar.Get("fib:rec:count").(metric.Metric).Add(1)
 		start := time.Now()
 		fmt.Fprintf(w, "%d", fibrec(40))
-		expvar.Get("fib:rec:sec").(metric.Metric).Add(float64(time.Now().Sub(start)) / float64(time.Second))
+		expvar.Get("fib:rec:sec").(metric.Metric).
+			Add(float64(time.Now().Sub(start)) / float64(time.Second))
 	})
 	fmt.Println("Listen on :8000")
 	http.ListenAndServe(":8000", nil)
