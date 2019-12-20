@@ -143,9 +143,9 @@ func (mm multimetric) Add(n float64) {
 	}
 }
 
-func (mm *multimetric) MarshalJSON() ([]byte, error) {
+func (mm multimetric) MarshalJSON() ([]byte, error) {
 	b := []byte(`{"metrics":[`)
-	for i, m := range *mm {
+	for i, m := range mm {
 		if i != 0 {
 			b = append(b, ',')
 		}
@@ -260,13 +260,15 @@ func (g *gauge) MarshalJSON() ([]byte, error) {
 	defer g.Unlock()
 
 	var data struct {
+		Type  string  `json:"type"`
 		Value float64 `json:"value"`
-		Sum   float64 `json:"sum"`
+		Mean  float64 `json:"mean"`
 		Min   float64 `json:"min"`
 		Max   float64 `json:"max"`
+		Sum   float64 `json:"sum"`
 		Count int     `json:"count"`
-		Mean  float64 `json:"mean"`
 	}
+	data.Type = "g"
 	data.Value = g.Value
 	data.Sum = g.Sum
 	data.Min = g.Min
