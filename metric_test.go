@@ -163,6 +163,77 @@ func TestHistogramNormalDist(t *testing.T) {
 	}
 }
 
+func TestMetricJSON(t *testing.T) {
+	old := NewHistogram()
+	old.Add(1)
+	old.Add(1337)
+	old.Add(4934)
+	old.Add(-12)
+
+	j, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal("Error marshaling:", err)
+	}
+
+	m, err := loadSingleMetricsJSON(j)
+	if err != nil {
+		t.Fatal("Error loading json:", err)
+	}
+
+	hs, ok := m.(*histogram)
+	if !ok {
+		t.Fatal("Returned metrics is not histogram")
+	}
+
+	if s := hs.String(); s != `{"p50":1,"p90":4934,"p99":4934}` {
+		t.Fatal("Result is wrong:", s)
+	}
+}
+
+func TestMetricMultiJSON(t *testing.T) {
+	old := NewHistogram("15m1m", "1m10s")
+	old.Add(1)
+	old.Add(1337)
+	old.Add(4934)
+	old.Add(-12)
+
+	j, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal("Error marshaling:", err)
+	}
+
+	m, err := LoadMetricJSON(j)
+	if err != nil {
+		t.Fatal("Error loading json:", err)
+	}
+
+	if _, ok := m.(multimetric); !ok {
+		t.Fatal("Returned metrics is not multimetric")
+	}
+}
+
+func TestMetricSingleJSON(t *testing.T) {
+	old := NewHistogram("1m10s")
+	old.Add(1)
+	old.Add(1337)
+	old.Add(4934)
+	old.Add(-12)
+
+	j, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal("Error marshaling:", err)
+	}
+
+	m, err := LoadMetricJSON(j)
+	if err != nil {
+		t.Fatal("Error loading json:", err)
+	}
+
+	if _, ok := m.(*timeseries); !ok {
+		t.Fatal("Returned metrics is not timeseries")
+	}
+}
+
 func TestMetricReset(t *testing.T) {
 	c := &counter{}
 	c.Add(5)

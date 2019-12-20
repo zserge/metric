@@ -1,7 +1,9 @@
 package metric
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -46,6 +48,50 @@ func NewGauge(frames ...string) Metric {
 // percentiles of the incoming numbers.
 func NewHistogram(frames ...string) Metric {
 	return newMetric(func() metric { return &histogram{} }, frames...)
+}
+
+func LoadMetricJSON(b []byte) (Metric, error) {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, b); err != nil {
+		return nil, err
+	}
+
+	b = buf.Bytes()
+
+	switch {
+	case bytes.HasPrefix(b, []byte(`{"metrics":[{"interval":`)):
+		var mm multimetric
+		return mm, json.Unmarshal(b, &mm)
+	case bytes.HasPrefix(b, []byte(`{"interval":`)):
+		var ts timeseries
+		return &ts, json.Unmarshal(b, &ts)
+	default:
+		return loadSingleMetricsJSON(b)
+	}
+}
+
+func loadSingleMetricsJSON(b []byte) (metric, error) {
+	var Part struct {
+		Type string `json:"type"`
+	}
+
+	if err := json.Unmarshal(b, &Part); err != nil {
+		return nil, err
+	}
+
+	switch Part.Type {
+	case "c":
+		var c counter
+		return &c, json.Unmarshal(b, &c)
+	case "g":
+		var g gauge
+		return &g, json.Unmarshal(b, &g)
+	case "h":
+		var h histogram
+		return &h, json.Unmarshal(b, &h)
+	}
+
+	return nil, errors.New("Invalid JSON")
 }
 
 type timeseries struct {
@@ -111,9 +157,9 @@ func (ts *timeseries) UnmarshalJSON(v []byte) error {
 	defer ts.Unlock()
 
 	var data struct {
-		Interval float64  `json:"interval"`
-		Total    metric   `json:"total"`
-		Samples  []metric `json:"samples"`
+		Interval float64           `json:"interval"`
+		Total    json.RawMessage   `json:"total"`
+		Samples  []json.RawMessage `json:"samples"`
 	}
 
 	if err := json.Unmarshal(v, &data); err != nil {
@@ -121,8 +167,22 @@ func (ts *timeseries) UnmarshalJSON(v []byte) error {
 	}
 
 	ts.interval = time.Duration(data.Interval * float64(time.Second))
-	ts.total = data.Total
-	ts.samples = data.Samples
+
+	m, err := loadSingleMetricsJSON(data.Total)
+	if err != nil {
+		return err
+	}
+	ts.total = m
+
+	ts.samples = make([]metric, len(data.Samples))
+
+	for i, sample := range data.Samples {
+		m, err := loadSingleMetricsJSON(sample)
+		if err != nil {
+			return err
+		}
+		ts.samples[i] = m
+	}
 
 	ts.roll()
 	return nil
@@ -149,7 +209,12 @@ func (mm multimetric) MarshalJSON() ([]byte, error) {
 		if i != 0 {
 			b = append(b, ',')
 		}
-		x, _ := json.Marshal(m)
+
+		x, err := m.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+
 		b = append(b, x...)
 	}
 	b = append(b, ']', '}')
@@ -465,10 +530,12 @@ func newMetric(builder func() metric, frames ...string) Metric {
 	if len(frames) == 1 {
 		return newTimeseries(builder, frames[0])
 	}
-	mm := multimetric{}
+
+	var mm multimetric
 	for _, frame := range frames {
 		mm = append(mm, newTimeseries(builder, frame))
 	}
+
 	sort.Slice(mm, func(i, j int) bool {
 		a, b := mm[i], mm[j]
 		return a.interval.Seconds()*float64(len(a.samples)) < b.interval.Seconds()*float64(len(b.samples))
