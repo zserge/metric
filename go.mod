@@ -1,1 +1,1 @@
-module github.com/zserge/metric
+module github.com/diamondburned/metric
